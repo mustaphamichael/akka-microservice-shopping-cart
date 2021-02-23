@@ -14,6 +14,8 @@ import akka.persistence.typed.scaladsl.{
   ReplyEffect,
   RetentionCriteria
 }
+
+import java.time.Instant
 import scala.concurrent.duration._
 
 /*
@@ -31,8 +33,14 @@ object ShoppingCart {
       replyTo: ActorRef[StatusReply[Summary]])
       extends Command
 
+  final case class Checkout(replyTo: ActorRef[StatusReply[Summary]])
+      extends Command
+
+  final case class Get(replyTo: ActorRef[Summary]) extends Command
+
   /** Summary of the shopping cart state, used in reply messages. */
-  final case class Summary(items: Map[String, Int]) extends CborSerializable
+  final case class Summary(items: Map[String, Int], checkout: Boolean)
+      extends CborSerializable
 
   sealed trait Event extends CborSerializable {
     def cartId: String
@@ -41,7 +49,16 @@ object ShoppingCart {
   final case class ItemAdded(cartId: String, itemId: String, quantity: Int)
       extends Event
 
-  final case class State(items: Map[String, Int]) extends CborSerializable {
+  final case class CheckedOut(cartId: String, eventTime: Instant) extends Event
+
+  final case class State(items: Map[String, Int], checkoutDate: Option[Instant])
+      extends CborSerializable {
+    def isCheckedOut: Boolean = checkoutDate.isDefined
+
+    def checkout(now: Instant): State = copy(checkoutDate = Some(now))
+
+    def toSummary: Summary = Summary(items, isCheckedOut)
+
     def hasItem(itemId: String): Boolean = items.contains(itemId)
 
     def isEmpty: Boolean = items.isEmpty
@@ -55,10 +72,18 @@ object ShoppingCart {
   }
 
   object State {
-    val empty: State = State(items = Map.empty)
+    val empty: State = State(items = Map.empty, checkoutDate = None)
   }
 
   private def handleCommand(
+      cartId: String,
+      state: State,
+      command: Command): ReplyEffect[Event, State] = {
+    if (state.isCheckedOut) checkedOutShoppingCart(state, command)
+    else openShoppingCart(cartId, state, command)
+  }
+
+  private def openShoppingCart(
       cartId: String,
       state: State,
       command: Command): ReplyEffect[Event, State] = {
@@ -75,8 +100,36 @@ object ShoppingCart {
           Effect
             .persist(ItemAdded(cartId, itemId, quantity))
             .thenReply(replyTo) { updatedCart =>
-              StatusReply.Success(Summary(updatedCart.items))
+              StatusReply.Success(updatedCart.toSummary)
             }
+      case Checkout(replyTo) =>
+        if (state.isEmpty)
+          Effect.reply(replyTo)(
+            StatusReply.Error("Cannot checkout an empty shopping cart"))
+        else
+          Effect
+            .persist(CheckedOut(cartId, Instant.now()))
+            .thenReply(replyTo)(updatedCart =>
+              StatusReply.Success(updatedCart.toSummary))
+      case Get(replyTo) =>
+        Effect.reply(replyTo)(state.toSummary)
+    }
+  }
+
+  private def checkedOutShoppingCart(
+      state: State,
+      command: Command): ReplyEffect[Event, State] = {
+    command match {
+      case cmd: AddItems =>
+        Effect.reply(cmd.replyTo)(
+          StatusReply.Error(
+            "Can't add an item to an already checked out shopping cart"))
+      case Checkout(replyTo) =>
+        Effect.reply(replyTo)(
+          StatusReply.Error(
+            "Can't checkout an already checked out shopping cart"))
+      case Get(replyTo) =>
+        Effect.reply(replyTo)(state.toSummary)
     }
   }
 
@@ -84,6 +137,8 @@ object ShoppingCart {
     event match {
       case ItemAdded(_, itemId, quantity) =>
         state.updateItem(itemId, quantity)
+      case CheckedOut(_, eventTime) =>
+        state.checkout(eventTime)
     }
   }
 

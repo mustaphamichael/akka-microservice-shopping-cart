@@ -6,7 +6,7 @@ import akka.persistence.testkit.scaladsl.EventSourcedBehaviorTestKit
 import com.typesafe.config.ConfigFactory
 import org.scalatest.BeforeAndAfterEach
 import org.scalatest.wordspec.AnyWordSpecLike
-import shopping.cart.ShoppingCart.{ AddItems, ItemAdded, Summary }
+import shopping.cart.ShoppingCart.{ AddItems, Checkout, ItemAdded, Summary }
 
 /*
  * @created - 17/02/2021
@@ -46,7 +46,8 @@ class ShoppingCartSpec
       val result1 =
         eventSourcedTestKit.runCommand[StatusReply[Summary]](replyTo =>
           ShoppingCart.AddItems("foo", 42, replyTo))
-      result1.reply should ===(StatusReply.Success(Summary(Map("foo" -> 42))))
+      result1.reply should ===(
+        StatusReply.Success(Summary(Map("foo" -> 42), false)))
       result1.event should ===(ItemAdded(cartId, "foo", 42))
     }
 
@@ -59,6 +60,29 @@ class ShoppingCartSpec
         eventSourcedTestKit.runCommand[StatusReply[Summary]](
           AddItems("foo", 13, _))
       result2.reply.isError should ===(true)
+    }
+
+    "checkout" in {
+      val result1 = eventSourcedTestKit.runCommand[StatusReply[Summary]](
+        AddItems("foo", 42, _))
+      result1.reply.isSuccess should ===(true)
+      val result2 =
+        eventSourcedTestKit.runCommand[StatusReply[Summary]](Checkout)
+      result2.reply should ===(
+        StatusReply.Success(Summary(Map("foo" -> 42), checkout = true)))
+      val result3 = eventSourcedTestKit.runCommand[StatusReply[Summary]](
+        AddItems("bar", 13, _))
+      result3.reply.isSuccess should ===(false)
+    }
+
+    "get" in {
+      val result1 = eventSourcedTestKit.runCommand[StatusReply[Summary]](
+        AddItems("foo", 42, _))
+      result1.reply.isSuccess should ===(true)
+
+      val result2 =
+        eventSourcedTestKit.runCommand[Summary](ShoppingCart.Get)
+      result2.reply should ===(Summary(Map("foo" -> 42), checkout = false))
     }
   }
 }

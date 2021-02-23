@@ -5,9 +5,16 @@ import akka.grpc.GrpcServiceException
 import akka.util.Timeout
 import io.grpc.Status
 import org.slf4j.LoggerFactory
-import shopping.cart.proto.{AddItemRequest, Cart, Item, ShoppingCartService}
+import shopping.cart.ShoppingCart.Summary
+import shopping.cart.proto.{
+  AddItemRequest,
+  Cart,
+  CheckoutRequest,
+  GetCartRequest,
+  ShoppingCartService
+}
 
-import scala.concurrent.{Future, TimeoutException}
+import scala.concurrent.{ Future, TimeoutException }
 
 /*
  * @created - 14/02/2021
@@ -35,10 +42,30 @@ class ShoppingCartServiceImpl(system: ActorSystem[_])
     convertError(response)
   }
 
+  override def checkout(in: CheckoutRequest): Future[Cart] = {
+    val entityRef = sharding.entityRefFor(ShoppingCart.EntityKey, in.cartId)
+    val reply: Future[Summary] = entityRef.askWithStatus(ShoppingCart.Checkout)
+    val response = reply.map(cart => toProtoCart(cart))
+    convertError(response)
+  }
+
+  override def getCart(in: GetCartRequest): Future[Cart] = {
+    val entityRef = sharding.entityRefFor(ShoppingCart.EntityKey, in.cartId)
+    val response = entityRef.ask(ShoppingCart.Get).map { cart =>
+      if (cart.items.isEmpty)
+        throw new GrpcServiceException(
+          Status.NOT_FOUND.withDescription(s"Cart ${in.cartId} not found"))
+      else toProtoCart(cart)
+    }
+    convertError(response)
+  }
+
   private def toProtoCart(cart: ShoppingCart.Summary): Cart = {
-    Cart(cart.items.iterator.map { case (itemId, quantity) =>
-      proto.Item(itemId, quantity)
-    }.toSeq)
+    Cart(
+      cart.items.iterator.map { case (itemId, quantity) =>
+        proto.Item(itemId, quantity)
+      }.toSeq,
+      cart.checkout)
   }
 
   private def convertError[T](response: Future[T]): Future[T] = {
