@@ -25,6 +25,7 @@ class Main(context: ActorContext[Nothing])
 
   AkkaManagement(system).start()
   ClusterBootstrap(system).start()
+  ShoppingCart.init(system)
 
   val grpcInterface =
     system.settings.config.getString("shopping-cart-service.grpc.interface")
