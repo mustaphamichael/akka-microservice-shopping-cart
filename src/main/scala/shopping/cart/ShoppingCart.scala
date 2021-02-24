@@ -4,6 +4,7 @@ import akka.actor.typed.{ ActorRef, ActorSystem, Behavior, SupervisorStrategy }
 import akka.cluster.sharding.typed.scaladsl.{
   ClusterSharding,
   Entity,
+  EntityContext,
   EntityTypeKey
 }
 import akka.pattern.StatusReply
@@ -75,6 +76,35 @@ object ShoppingCart {
     val empty: State = State(items = Map.empty, checkoutDate = None)
   }
 
+  val tags = Vector.tabulate(5)(i => s"carts-$i")
+  val EntityKey: EntityTypeKey[Command] = EntityTypeKey[Command]("ShoppingCart")
+
+  def init(system: ActorSystem[_]): Unit = {
+    val behaviorFactory: EntityContext[Command] => Behavior[Command] = {
+      entityContext =>
+        val i = math.abs(entityContext.entityId.hashCode % tags.size)
+        val selectedTag = tags(i)
+        ShoppingCart(entityContext.entityId, selectedTag)
+    }
+
+    ClusterSharding(system).init(Entity(EntityKey)(behaviorFactory))
+  }
+
+  def apply(cartId: String, projectionTag: String): Behavior[Command] = {
+    EventSourcedBehavior
+      .withEnforcedReplies[Command, Event, State](
+        persistenceId = PersistenceId(EntityKey.name, cartId),
+        emptyState = State.empty,
+        commandHandler =
+          (state, command) => handleCommand(cartId, state, command),
+        eventHandler = (state, event) => handleEvent(state, event))
+      .withTagger(_ => Set(projectionTag))
+      .withRetention(RetentionCriteria
+        .snapshotEvery(numberOfEvents = 100, keepNSnapshots = 3))
+      .onPersistFailure(
+        SupervisorStrategy.restartWithBackoff(200.millis, 5.seconds, 0.1))
+  }
+
   private def handleCommand(
       cartId: String,
       state: State,
@@ -140,27 +170,5 @@ object ShoppingCart {
       case CheckedOut(_, eventTime) =>
         state.checkout(eventTime)
     }
-  }
-
-  val EntityKey: EntityTypeKey[Command] = EntityTypeKey[Command]("ShoppingCart")
-
-  def init(system: ActorSystem[_]): Unit = {
-    ClusterSharding(system).init(Entity(EntityKey) { entityContext =>
-      ShoppingCart(entityContext.entityId)
-    })
-  }
-
-  def apply(cartId: String): Behavior[Command] = {
-    EventSourcedBehavior
-      .withEnforcedReplies[Command, Event, State](
-        persistenceId = PersistenceId(EntityKey.name, cartId),
-        emptyState = State.empty,
-        commandHandler =
-          (state, command) => handleCommand(cartId, state, command),
-        eventHandler = (state, event) => handleEvent(state, event))
-      .withRetention(RetentionCriteria
-        .snapshotEvery(numberOfEvents = 100, keepNSnapshots = 3))
-      .onPersistFailure(
-        SupervisorStrategy.restartWithBackoff(200.millis, 5.seconds, 0.1))
   }
 }

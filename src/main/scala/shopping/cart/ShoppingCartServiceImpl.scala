@@ -1,5 +1,5 @@
 package shopping.cart
-import akka.actor.typed.ActorSystem
+import akka.actor.typed.{ ActorSystem, DispatcherSelector }
 import akka.cluster.sharding.typed.scaladsl.ClusterSharding
 import akka.grpc.GrpcServiceException
 import akka.util.Timeout
@@ -11,17 +11,22 @@ import shopping.cart.proto.{
   Cart,
   CheckoutRequest,
   GetCartRequest,
+  GetItemPopularityRequest,
+  GetItemPopularityResponse,
   ShoppingCartService
 }
+import shopping.cart.repository.{ ItemPopularityRepository, ScalikeJdbcSession }
 
-import scala.concurrent.{ Future, TimeoutException }
+import scala.concurrent.{ ExecutionContext, Future, TimeoutException }
 
 /*
  * @created - 14/02/2021
  * @project - shopping-cart-service
  * @author  - Michael Mustapha
  */
-class ShoppingCartServiceImpl(system: ActorSystem[_])
+class ShoppingCartServiceImpl(
+    system: ActorSystem[_],
+    itemPopularityRepository: ItemPopularityRepository)
     extends ShoppingCartService {
   import system.executionContext
 
@@ -58,6 +63,25 @@ class ShoppingCartServiceImpl(system: ActorSystem[_])
       else toProtoCart(cart)
     }
     convertError(response)
+  }
+
+  private val blockingJdbcExecutor: ExecutionContext =
+    system.dispatchers.lookup(
+      DispatcherSelector.fromConfig(
+        "akka.projection.jdbc.blocking-jdbc-dispatcher"))
+
+  override def getItemPopularity(
+      in: GetItemPopularityRequest): Future[GetItemPopularityResponse] = {
+    Future {
+      ScalikeJdbcSession.withSession { session =>
+        itemPopularityRepository.getItem(session, in.itemId)
+      }
+    }(blockingJdbcExecutor).map {
+      case Some(count) =>
+        GetItemPopularityResponse(in.itemId, count)
+      case None =>
+        GetItemPopularityResponse(in.itemId, 0L)
+    }
   }
 
   private def toProtoCart(cart: ShoppingCart.Summary): Cart = {
